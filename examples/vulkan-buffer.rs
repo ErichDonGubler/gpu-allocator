@@ -18,7 +18,7 @@ fn main() {
     let instance = {
         let app_name = CString::new("Vulkan gpu-allocator test").unwrap();
 
-        let appinfo = vk::ApplicationInfo::builder()
+        let appinfo = vk::ApplicationInfo::default()
             .application_name(&app_name)
             .application_version(0)
             .engine_name(&app_name)
@@ -33,7 +33,7 @@ fn main() {
 
         let extensions_names_raw = vec![];
 
-        let create_info = vk::InstanceCreateInfo::builder()
+        let create_info = vk::InstanceCreateInfo::default()
             .application_info(&appinfo)
             .enabled_layer_names(&layers_names_raw)
             .enabled_extension_names(&extensions_names_raw);
@@ -79,11 +79,11 @@ fn main() {
         };
         let priorities = [1.0];
 
-        let queue_info = vk::DeviceQueueCreateInfo::builder()
+        let queue_info = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index as u32)
             .queue_priorities(&priorities);
 
-        let create_info = vk::DeviceCreateInfo::builder()
+        let create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_info))
             .enabled_extension_names(&device_extension_names_raw)
             .enabled_features(&features);
@@ -104,7 +104,7 @@ fn main() {
 
     // Test allocating Gpu Only memory
     {
-        let test_buffer_info = vk::BufferCreateInfo::builder()
+        let test_buffer_info = vk::BufferCreateInfo::default()
             .size(512)
             .usage(vk::BufferUsageFlags::STORAGE_BUFFER)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
@@ -137,7 +137,7 @@ fn main() {
 
     // Test allocating Cpu to Gpu memory
     {
-        let test_buffer_info = vk::BufferCreateInfo::builder()
+        let test_buffer_info = vk::BufferCreateInfo::default()
             .size(512)
             .usage(vk::BufferUsageFlags::STORAGE_BUFFER)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
@@ -170,7 +170,7 @@ fn main() {
 
     // Test allocating Gpu to Cpu memory
     {
-        let test_buffer_info = vk::BufferCreateInfo::builder()
+        let test_buffer_info = vk::BufferCreateInfo::default()
             .size(512)
             .usage(vk::BufferUsageFlags::STORAGE_BUFFER)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
