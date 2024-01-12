@@ -34,20 +34,7 @@ egui = { version = "0.24", optional = true, default-features = false }
 egui_extras = { version = "0.24", optional = true, default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-# Only needed for public-winapi interop helpers
 winapi = { version = "0.3.9", features = ["d3d12", "winerror", "impl-default", "impl-debug"], optional = true }
-
-[target.'cfg(windows)'.dependencies.windows]
-version = ">=0.51,<=0.52"
-features = [
-    "Win32_Foundation",
-    "Win32_Graphics",
-    "Win32_Graphics_Direct3D",
-    "Win32_Graphics_Direct3D12",
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Dxgi_Common",
-]
-optional = true
 
 [dev-dependencies]
 # Enable the "loaded" feature to be able to access the Vulkan entrypoint.
@@ -56,17 +43,6 @@ env_logger = "0.10"
 
 [target.'cfg(windows)'.dev-dependencies]
 winapi = { version = "0.3.9", features = ["d3d12", "d3d12sdklayers", "dxgi1_6", "winerror", "impl-default", "impl-debug", "winuser", "windowsx", "libloaderapi"] }
-
-[target.'cfg(windows)'.dev-dependencies.windows]
-version = ">=0.51,<=0.52"
-features = [
-    "Win32_Foundation",
-    "Win32_Graphics",
-    "Win32_Graphics_Direct3D",
-    "Win32_Graphics_Direct3D12",
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Dxgi_Common",
-]
 
 [[example]]
 name = "vulkan-buffer"
@@ -83,8 +59,7 @@ required-features = ["d3d12"]
 [features]
 visualizer = ["egui", "egui_extras"]
 vulkan = ["ash"]
-d3d12 = ["windows"]
-# Expose helper functionality for winapi types to interface with gpu-allocator, which is primarily windows-rs driven
-public-winapi = ["dep:winapi"]
+d3d12 = ["winapi"]
+public-winapi = []
 
 default = ["d3d12", "vulkan"]
