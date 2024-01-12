@@ -101,7 +101,6 @@ pub enum ResourceCategory {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceStateOrBarrierLayout {
     ResourceState(D3D12_RESOURCE_STATES),
-    BarrierLayout(D3D12_BARRIER_LAYOUT),
 }
 
 #[derive(Clone, Copy)]
@@ -239,9 +238,6 @@ pub enum ID3D12DeviceVersion {
     /// Basic device compatible with legacy barriers only, i.e. can only be used in conjunction
     /// with [`ResourceStateOrBarrierLayout::ResourceState`].
     Device(ID3D12Device),
-    /// Required for enhanced barrier support, i.e. when using
-    /// [`ResourceStateOrBarrierLayout::BarrierLayout`].
-    Device10(ID3D12Device10),
 }
 
 impl std::ops::Deref for ID3D12DeviceVersion {
@@ -250,8 +246,6 @@ impl std::ops::Deref for ID3D12DeviceVersion {
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Device(device) => device,
-            // Windows-rs hides CanInto, we know that Device10 is a subclass of Device but there's not even a Deref.
-            Self::Device10(device10) => windows::core::CanInto::can_into(device10),
         }
     }
 }
@@ -831,37 +825,6 @@ impl Allocator {
                                 &mut result,
                             )
                         }
-                        (
-                            ID3D12DeviceVersion::Device10(device),
-                            ResourceStateOrBarrierLayout::BarrierLayout(initial_layout),
-                        ) => {
-                            let resource_desc1 = D3D12_RESOURCE_DESC1 {
-                                Dimension: desc.resource_desc.Dimension,
-                                Alignment: desc.resource_desc.Alignment,
-                                Width: desc.resource_desc.Width,
-                                Height: desc.resource_desc.Height,
-                                DepthOrArraySize: desc.resource_desc.DepthOrArraySize,
-                                MipLevels: desc.resource_desc.MipLevels,
-                                Format: desc.resource_desc.Format,
-                                SampleDesc: desc.resource_desc.SampleDesc,
-                                Layout: desc.resource_desc.Layout,
-                                Flags: desc.resource_desc.Flags,
-                                // TODO: This is the only new field
-                                SamplerFeedbackMipRegion: D3D12_MIP_REGION::default(),
-                            };
-
-                            device.CreateCommittedResource3(
-                                *heap_properties,
-                                *heap_flags,
-                                &resource_desc1,
-                                initial_layout,
-                                clear_value,
-                                None, // TODO
-                                None, // TODO: https://github.com/microsoft/DirectX-Specs/blob/master/d3d/VulkanOn12.md#format-list-casting
-                                &mut result,
-                            )
-                        }
-                        _ => return Err(AllocationError::BarrierLayoutNeedsDevice10),
                     }
                 } {
                     return Err(AllocationError::Internal(format!(
@@ -935,35 +898,6 @@ impl Allocator {
                                 &mut result,
                             )
                         }
-                        (
-                            ID3D12DeviceVersion::Device10(device),
-                            ResourceStateOrBarrierLayout::BarrierLayout(initial_layout),
-                        ) => {
-                            let resource_desc1 = D3D12_RESOURCE_DESC1 {
-                                Dimension: desc.resource_desc.Dimension,
-                                Alignment: desc.resource_desc.Alignment,
-                                Width: desc.resource_desc.Width,
-                                Height: desc.resource_desc.Height,
-                                DepthOrArraySize: desc.resource_desc.DepthOrArraySize,
-                                MipLevels: desc.resource_desc.MipLevels,
-                                Format: desc.resource_desc.Format,
-                                SampleDesc: desc.resource_desc.SampleDesc,
-                                Layout: desc.resource_desc.Layout,
-                                Flags: desc.resource_desc.Flags,
-                                // TODO: This is the only new field
-                                SamplerFeedbackMipRegion: D3D12_MIP_REGION::default(),
-                            };
-                            device.CreatePlacedResource2(
-                                allocation.heap(),
-                                allocation.offset(),
-                                &resource_desc1,
-                                initial_layout,
-                                None,
-                                None, // TODO: https://github.com/microsoft/DirectX-Specs/blob/master/d3d/VulkanOn12.md#format-list-casting
-                                &mut result,
-                            )
-                        }
-                        _ => return Err(AllocationError::BarrierLayoutNeedsDevice10),
                     }
                 } {
                     return Err(AllocationError::Internal(format!(
