@@ -6,7 +6,7 @@ use crate::visualizer::{
     MemoryChunksVisualizationSettings,
 };
 
-use windows::Win32::Graphics::Direct3D12::*;
+use winapi::um::d3d12::*;
 
 struct AllocatorVisualizerBlockWindow {
     memory_type_index: usize,

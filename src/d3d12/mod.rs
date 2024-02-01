@@ -4,7 +4,7 @@ use std::{backtrace::Backtrace, fmt, sync::Arc};
 
 use log::{debug, warn, Level};
 
-use windows::Win32::{Foundation::E_OUTOFMEMORY, Graphics::Direct3D12::*};
+mod com;
 
 #[cfg(feature = "public-winapi")]
 mod public_winapi {
@@ -12,63 +12,45 @@ mod public_winapi {
     pub use winapi::um::d3d12 as winapi_d3d12;
 
     /// Trait similar to [`AsRef`]/[`AsMut`],
-    pub trait ToWinapi<T> {
-        fn as_winapi(&self) -> *const T;
-        fn as_winapi_mut(&mut self) -> *mut T;
+    pub trait ToWinapi<T = Self>: Sized {
+        fn as_winapi(self) -> T;
+        fn as_winapi_mut(self) -> T;
     }
 
     /// [`windows`] types hold their pointer internally and provide drop semantics. As such this trait
     /// is usually implemented on the _pointer type_ (`*const`, `*mut`) of the [`winapi`] object so that
     /// a **borrow of** that pointer becomes a borrow of the [`windows`] type.
-    pub trait ToWindows<T> {
-        fn as_windows(&self) -> &T;
+    pub trait ToWindows<T>: Sized {
+        fn as_windows(self) -> T;
     }
 
-    impl ToWinapi<winapi_d3d12::ID3D12Resource> for ID3D12Resource {
-        fn as_winapi(&self) -> *const winapi_d3d12::ID3D12Resource {
-            unsafe { std::mem::transmute_copy(self) }
-        }
-
-        fn as_winapi_mut(&mut self) -> *mut winapi_d3d12::ID3D12Resource {
-            unsafe { std::mem::transmute_copy(self) }
+    impl ToWindows<ComPtr<winapi_d3d12::ID3D12Device>> for *const winapi_d3d12::ID3D12Device {
+        fn as_windows(self) -> ComPtr<winapi_d3d12::ID3D12Device> {
+            unsafe { ComPtr::from_raw(self.cast_mut()) }
         }
     }
 
-    impl ToWinapi<winapi_d3d12::ID3D12Device> for ID3D12Device {
-        fn as_winapi(&self) -> *const winapi_d3d12::ID3D12Device {
-            unsafe { std::mem::transmute_copy(self) }
+    impl ToWinapi<*mut winapi_d3d12::ID3D12Heap> for &winapi_d3d12::ID3D12Heap {
+        fn as_winapi(self) -> *mut winapi_d3d12::ID3D12Heap {
+            (self as *const winapi_d3d12::ID3D12Heap).cast_mut()
         }
 
-        fn as_winapi_mut(&mut self) -> *mut winapi_d3d12::ID3D12Device {
-            unsafe { std::mem::transmute_copy(self) }
-        }
-    }
-
-    impl ToWindows<ID3D12Device> for *const winapi_d3d12::ID3D12Device {
-        fn as_windows(&self) -> &ID3D12Device {
-            unsafe { std::mem::transmute(self) }
+        fn as_winapi_mut(self) -> *mut winapi_d3d12::ID3D12Heap {
+            (self as *const winapi_d3d12::ID3D12Heap).cast_mut()
         }
     }
 
-    impl ToWindows<ID3D12Device> for *mut winapi_d3d12::ID3D12Device {
-        fn as_windows(&self) -> &ID3D12Device {
-            unsafe { std::mem::transmute(self) }
-        }
-    }
-
-    impl ToWindows<ID3D12Device> for &mut winapi_d3d12::ID3D12Device {
-        fn as_windows(&self) -> &ID3D12Device {
-            unsafe { std::mem::transmute(self) }
-        }
-    }
-
-    impl ToWinapi<winapi_d3d12::ID3D12Heap> for ID3D12Heap {
-        fn as_winapi(&self) -> *const winapi_d3d12::ID3D12Heap {
-            unsafe { std::mem::transmute_copy(self) }
+    impl<'a> ToWinapi<&'a ID3D12Device> for &'a ID3D12DeviceVersion {
+        fn as_winapi(self) -> &'a ID3D12Device {
+            match self {
+                ID3D12DeviceVersion::Device(device) => &*device,
+            }
         }
 
-        fn as_winapi_mut(&mut self) -> *mut winapi_d3d12::ID3D12Heap {
-            unsafe { std::mem::transmute_copy(self) }
+        fn as_winapi_mut(self) -> &'a ID3D12Device {
+            match self {
+                ID3D12DeviceVersion::Device(device) => &*device,
+            }
         }
     }
 }
@@ -80,6 +62,14 @@ pub use public_winapi::*;
 mod visualizer;
 #[cfg(feature = "visualizer")]
 pub use visualizer::AllocatorVisualizer;
+
+use winapi::{
+    shared::winerror::{E_OUTOFMEMORY, S_OK},
+    um::d3d12::*,
+    Interface,
+};
+
+use self::com::ComPtr;
 
 use super::allocator;
 use super::allocator::AllocationType;
@@ -101,7 +91,6 @@ pub enum ResourceCategory {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceStateOrBarrierLayout {
     ResourceState(D3D12_RESOURCE_STATES),
-    BarrierLayout(D3D12_BARRIER_LAYOUT),
 }
 
 #[derive(Clone, Copy)]
@@ -148,23 +137,6 @@ impl From<&D3D12_RESOURCE_DESC> for ResourceCategory {
     }
 }
 
-#[cfg(feature = "public-winapi")]
-impl From<&winapi_d3d12::D3D12_RESOURCE_DESC> for ResourceCategory {
-    fn from(desc: &winapi_d3d12::D3D12_RESOURCE_DESC) -> Self {
-        if desc.Dimension == winapi_d3d12::D3D12_RESOURCE_DIMENSION_BUFFER {
-            Self::Buffer
-        } else if (desc.Flags
-            & (winapi_d3d12::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
-                | winapi_d3d12::D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))
-            != 0
-        {
-            Self::RtvDsvTexture
-        } else {
-            Self::OtherTexture
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct AllocationCreateDesc<'a> {
     /// Name of the allocation, for tracking and debugging purposes
@@ -189,16 +161,14 @@ impl<'a> AllocationCreateDesc<'a> {
     /// types as [`from_d3d12_resource_desc()`][Self::from_d3d12_resource_desc()].
     #[cfg(feature = "public-winapi")]
     pub fn from_winapi_d3d12_resource_desc(
-        device: *const winapi_d3d12::ID3D12Device,
+        device: &winapi_d3d12::ID3D12Device,
         desc: &winapi_d3d12::D3D12_RESOURCE_DESC,
         name: &'a str,
         location: MemoryLocation,
     ) -> AllocationCreateDesc<'a> {
-        let device = device.as_windows();
         // Raw structs are binary-compatible
-        let desc = unsafe { std::mem::transmute(desc) };
         let allocation_info =
-            unsafe { device.GetResourceAllocationInfo(0, std::slice::from_ref(desc)) };
+            unsafe { device.GetResourceAllocationInfo(0, 1, std::slice::from_ref(desc).as_ptr()) };
         let resource_category: ResourceCategory = desc.into();
 
         AllocationCreateDesc {
@@ -221,7 +191,7 @@ impl<'a> AllocationCreateDesc<'a> {
         location: MemoryLocation,
     ) -> AllocationCreateDesc<'a> {
         let allocation_info =
-            unsafe { device.GetResourceAllocationInfo(0, std::slice::from_ref(desc)) };
+            unsafe { device.GetResourceAllocationInfo(0, 1, std::slice::from_ref(desc).as_ptr()) };
         let resource_category: ResourceCategory = desc.into();
 
         AllocationCreateDesc {
@@ -238,10 +208,7 @@ impl<'a> AllocationCreateDesc<'a> {
 pub enum ID3D12DeviceVersion {
     /// Basic device compatible with legacy barriers only, i.e. can only be used in conjunction
     /// with [`ResourceStateOrBarrierLayout::ResourceState`].
-    Device(ID3D12Device),
-    /// Required for enhanced barrier support, i.e. when using
-    /// [`ResourceStateOrBarrierLayout::BarrierLayout`].
-    Device10(ID3D12Device10),
+    Device(ComPtr<ID3D12Device>),
 }
 
 impl std::ops::Deref for ID3D12DeviceVersion {
@@ -250,8 +217,6 @@ impl std::ops::Deref for ID3D12DeviceVersion {
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Device(device) => device,
-            // Windows-rs hides CanInto, we know that Device10 is a subclass of Device but there's not even a Deref.
-            Self::Device10(device10) => windows::core::CanInto::can_into(device10),
         }
     }
 }
@@ -277,7 +242,7 @@ pub enum ResourceType<'a> {
 pub struct Resource {
     name: String,
     pub allocation: Option<Allocation>,
-    resource: Option<ID3D12Resource>,
+    resource: Option<ComPtr<ID3D12Resource>>,
     pub memory_location: MemoryLocation,
     memory_type_index: Option<usize>,
     pub size: u64,
@@ -310,7 +275,7 @@ pub struct Allocation {
     size: u64,
     memory_block_index: usize,
     memory_type_index: usize,
-    heap: ID3D12Heap,
+    heap: ComPtr<ID3D12Heap>,
 
     name: Option<Box<str>>,
 }
@@ -349,7 +314,7 @@ impl Allocation {
 
 #[derive(Debug)]
 struct MemoryBlock {
-    heap: ID3D12Heap,
+    heap: ComPtr<ID3D12Heap>,
     size: u64,
     sub_allocator: Box<dyn allocator::SubAllocator>,
 }
@@ -375,19 +340,20 @@ impl MemoryBlock {
                 HeapCategory::OtherTexture => D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES,
             };
 
-            let mut heap = None;
-            let hr = unsafe { device.CreateHeap(&desc, &mut heap) };
+            let mut heap = ComPtr::<ID3D12Heap>::null();
+            let hr = unsafe { device.CreateHeap(&desc, &ID3D12Heap::uuidof(), heap.mut_void()) };
             match hr {
-                Err(e) if e.code() == E_OUTOFMEMORY => Err(AllocationError::OutOfMemory),
-                Err(e) => Err(AllocationError::Internal(format!(
-                    "ID3D12Device::CreateHeap failed: {}",
-                    e
-                ))),
-                Ok(()) => heap.ok_or_else(|| {
+                E_OUTOFMEMORY => Err(AllocationError::OutOfMemory),
+                S_OK => (!heap.is_null()).then_some(heap).ok_or_else(|| {
                     AllocationError::Internal(
                         "ID3D12Heap pointer is null, but should not be.".into(),
                     )
                 }),
+                // TODO: fix massively regressed diagnostic quality
+                e => Err(AllocationError::Internal(format!(
+                    "ID3D12Device::CreateHeap failed: {}",
+                    e
+                ))),
             }?
         };
 
@@ -405,7 +371,6 @@ impl MemoryBlock {
     }
 }
 
-#[derive(Debug)]
 struct MemoryType {
     memory_blocks: Vec<Option<MemoryBlock>>,
     committed_allocations: CommittedAllocationStatistics,
@@ -414,6 +379,38 @@ struct MemoryType {
     heap_properties: D3D12_HEAP_PROPERTIES,
     memory_type_index: usize,
     active_general_blocks: usize,
+}
+
+impl fmt::Debug for MemoryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            memory_blocks,
+            committed_allocations,
+            memory_location,
+            heap_category,
+            heap_properties:
+                D3D12_HEAP_PROPERTIES {
+                    Type,
+                    CPUPageProperty,
+                    MemoryPoolPreference,
+                    CreationNodeMask,
+                    VisibleNodeMask,
+                },
+            memory_type_index,
+            active_general_blocks,
+        } = self;
+
+        // TODO: parity with `windows`
+        f.debug_struct("MemoryType")
+            .field("memory_blocks", memory_blocks)
+            .field("committed_allocations", committed_allocations)
+            .field("memory_location", memory_location)
+            .field("heap_category", heap_category)
+            .field("heap_properties", &"D3D12_HEAP_PROPERTIES")
+            .field("memory_type_index", memory_type_index)
+            .field("active_general_blocks", active_general_blocks)
+            .finish()
+    }
 }
 
 impl MemoryType {
@@ -616,16 +613,19 @@ impl Allocator {
 
         // Query device for feature level
         let mut options = Default::default();
-        unsafe {
+        let hr = unsafe {
             device.CheckFeatureSupport(
                 D3D12_FEATURE_D3D12_OPTIONS,
                 <*mut D3D12_FEATURE_DATA_D3D12_OPTIONS>::cast(&mut options),
                 std::mem::size_of_val(&options) as u32,
             )
+        };
+        if hr != S_OK {
+            return Err(AllocationError::Internal(format!(
+                "ID3D12Device::CheckFeatureSupport failed: {}",
+                hr
+            )));
         }
-        .map_err(|e| {
-            AllocationError::Internal(format!("ID3D12Device::CheckFeatureSupport failed: {}", e))
-        })?;
 
         let is_heap_tier1 = options.ResourceHeapTier == D3D12_RESOURCE_HEAP_TIER_1;
 
@@ -814,12 +814,13 @@ impl Allocator {
                 heap_properties,
                 heap_flags,
             } => {
-                let mut result: Option<ID3D12Resource> = None;
+                let mut result = ComPtr::<ID3D12Resource>::null();
 
-                let clear_value: Option<*const D3D12_CLEAR_VALUE> =
-                    desc.clear_value.map(|v| -> *const _ { v });
+                let clear_value: *const D3D12_CLEAR_VALUE = desc
+                    .clear_value
+                    .map_or(std::ptr::null(), |v| -> *const _ { v });
 
-                if let Err(e) = unsafe {
+                let hr = unsafe {
                     match (&self.device, desc.initial_state_or_layout) {
                         (device, ResourceStateOrBarrierLayout::ResourceState(initial_state)) => {
                             device.CreateCommittedResource(
@@ -828,53 +829,30 @@ impl Allocator {
                                 desc.resource_desc,
                                 initial_state,
                                 clear_value,
-                                &mut result,
+                                &ID3D12Resource::uuidof(),
+                                result.mut_void(),
                             )
                         }
-                        (
-                            ID3D12DeviceVersion::Device10(device),
-                            ResourceStateOrBarrierLayout::BarrierLayout(initial_layout),
-                        ) => {
-                            let resource_desc1 = D3D12_RESOURCE_DESC1 {
-                                Dimension: desc.resource_desc.Dimension,
-                                Alignment: desc.resource_desc.Alignment,
-                                Width: desc.resource_desc.Width,
-                                Height: desc.resource_desc.Height,
-                                DepthOrArraySize: desc.resource_desc.DepthOrArraySize,
-                                MipLevels: desc.resource_desc.MipLevels,
-                                Format: desc.resource_desc.Format,
-                                SampleDesc: desc.resource_desc.SampleDesc,
-                                Layout: desc.resource_desc.Layout,
-                                Flags: desc.resource_desc.Flags,
-                                // TODO: This is the only new field
-                                SamplerFeedbackMipRegion: D3D12_MIP_REGION::default(),
-                            };
-
-                            device.CreateCommittedResource3(
-                                *heap_properties,
-                                *heap_flags,
-                                &resource_desc1,
-                                initial_layout,
-                                clear_value,
-                                None, // TODO
-                                None, // TODO: https://github.com/microsoft/DirectX-Specs/blob/master/d3d/VulkanOn12.md#format-list-casting
-                                &mut result,
-                            )
-                        }
-                        _ => return Err(AllocationError::BarrierLayoutNeedsDevice10),
                     }
-                } {
+                };
+
+                if hr != S_OK {
                     return Err(AllocationError::Internal(format!(
                         "ID3D12Device::CreateCommittedResource failed: {}",
-                        e
+                        hr
                     )));
                 }
 
-                let resource = result.expect("Allocation succeeded but no resource was returned?");
+                let resource = (!result.is_null())
+                    .then_some(result)
+                    .expect("Allocation succeeded but no resource was returned?");
 
                 let allocation_info = unsafe {
-                    self.device
-                        .GetResourceAllocationInfo(0, &[*desc.resource_desc])
+                    self.device.GetResourceAllocationInfo(
+                        0,
+                        1,
+                        std::slice::from_ref(desc.resource_desc).as_ptr(),
+                    )
                 };
 
                 let memory_type = self
@@ -908,7 +886,7 @@ impl Allocator {
                 let allocation_desc = {
                     let allocation_info = unsafe {
                         self.device
-                            .GetResourceAllocationInfo(0, &[*desc.resource_desc])
+                            .GetResourceAllocationInfo(0, 1, desc.resource_desc)
                     };
 
                     AllocationCreateDesc {
@@ -922,57 +900,33 @@ impl Allocator {
 
                 let allocation = self.allocate(&allocation_desc)?;
 
-                let mut result: Option<ID3D12Resource> = None;
-                if let Err(e) = unsafe {
+                let mut result = ComPtr::<ID3D12Resource>::null();
+                let hr = unsafe {
                     match (&self.device, desc.initial_state_or_layout) {
                         (device, ResourceStateOrBarrierLayout::ResourceState(initial_state)) => {
                             device.CreatePlacedResource(
-                                allocation.heap(),
+                                allocation.heap.as_mut_ptr(),
                                 allocation.offset(),
                                 desc.resource_desc,
                                 initial_state,
-                                None,
-                                &mut result,
+                                std::ptr::null(),
+                                &ID3D12Resource::uuidof(),
+                                result.mut_void(),
                             )
                         }
-                        (
-                            ID3D12DeviceVersion::Device10(device),
-                            ResourceStateOrBarrierLayout::BarrierLayout(initial_layout),
-                        ) => {
-                            let resource_desc1 = D3D12_RESOURCE_DESC1 {
-                                Dimension: desc.resource_desc.Dimension,
-                                Alignment: desc.resource_desc.Alignment,
-                                Width: desc.resource_desc.Width,
-                                Height: desc.resource_desc.Height,
-                                DepthOrArraySize: desc.resource_desc.DepthOrArraySize,
-                                MipLevels: desc.resource_desc.MipLevels,
-                                Format: desc.resource_desc.Format,
-                                SampleDesc: desc.resource_desc.SampleDesc,
-                                Layout: desc.resource_desc.Layout,
-                                Flags: desc.resource_desc.Flags,
-                                // TODO: This is the only new field
-                                SamplerFeedbackMipRegion: D3D12_MIP_REGION::default(),
-                            };
-                            device.CreatePlacedResource2(
-                                allocation.heap(),
-                                allocation.offset(),
-                                &resource_desc1,
-                                initial_layout,
-                                None,
-                                None, // TODO: https://github.com/microsoft/DirectX-Specs/blob/master/d3d/VulkanOn12.md#format-list-casting
-                                &mut result,
-                            )
-                        }
-                        _ => return Err(AllocationError::BarrierLayoutNeedsDevice10),
                     }
-                } {
+                };
+
+                if hr != S_OK {
                     return Err(AllocationError::Internal(format!(
                         "ID3D12Device::CreatePlacedResource failed: {}",
-                        e
+                        hr
                     )));
                 }
 
-                let resource = result.expect("Allocation succeeded but no resource was returned?");
+                let resource = (!result.is_null())
+                    .then_some(result)
+                    .expect("Allocation succeeded but no resource was returned?");
                 let size = allocation.size();
                 Ok(Resource {
                     name: desc.name.into(),
